@@ -1,0 +1,51 @@
+syntax="proto3";
+package pbcommand;  
+
+// game system
+
+message KillInfo {
+  int32 fid = 1;
+  int32 win = 2;
+  //oneof _ { int32 fid = 1;} // in this way it will not be nullified, so key with 0 value will appear when parsing message to json, but takes extra one byte for each oneof
+  //oneof __ { int32 win = 2;}
+}
+
+message Hit {
+  string data1=1;
+  int32 data2=2;
+  repeated KillInfo kill = 3;
+}
+
+message Shoot {
+  string data1=1;
+  int32 data2=2;
+  int32 data3=3;
+}
+
+message GameSystem {
+  oneof _ {
+    Hit hit=1;
+    Shoot shoot=2;
+  }
+}
+// item System
+message GetBackpack {
+  string data1=1;
+  int32 data2=2;
+  int32 data3=3;
+  int32 data4=4;
+}
+ 
+message ItemSystem {
+  oneof cmd {
+    GetBackpack getbackpack=1;
+  }
+}
+
+// system wrapper
+message SystemWrapper {
+  oneof _ {
+    GameSystem game = 1;
+    ItemSystem item = 2;
+  }
+}
