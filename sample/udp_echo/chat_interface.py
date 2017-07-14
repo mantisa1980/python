@@ -11,16 +11,15 @@ class IConnectionEvent(object): # implemented by server or any interested servic
         raise Exception("IConnectionEvent interface not implemented!")    
 
     def on_disconnect(self, chat_client):
-        raise Exception("IConnectionEvent interface not implemented!")    
+        raise Exception("IConnectionEvent interface not implemented!")
 
 class IPacketEvent(object): # implemented by server
     def on_packet(self, packet):
-        pass
+        raise Exception("IPacketEvent interface not implemented!")
 
 class IMessageEvent(object): # implemented by services
     def on_message(self, message):
-        raise Exception("IMessageEvent interface not implemented!")    
-
+        raise Exception("IMessageEvent interface not implemented!")
 
 class IChatClient(object):
     def send(self):
@@ -33,8 +32,7 @@ class IChatClient(object):
         raise Exception("IChatClient interface not implemented")
 
     def bind_connection_event_handler(self, IConnectionEvent_impl):
-        raise Exception("IChatClient interface not implemented")        
-        pass
+        raise Exception("IChatClient interface not implemented")
 
 class IChatServer(IConnectionEvent, IPacketEvent):
     def get_clients(self):
@@ -45,3 +43,10 @@ class IChatServer(IConnectionEvent, IPacketEvent):
     
     def bind_message_handler(self, sys_type, IMessageEvent_impl):
         raise Exception("IChatServer interface not implemented!")
+
+class IPacketParser(object):
+    def feed(self, data):
+        raise Exception("IPacketParser interface not implemented!")
+    
+    def next(self):
+        raise Exception("IPacketParser interface not implemented!")
