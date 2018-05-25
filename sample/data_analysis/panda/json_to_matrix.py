@@ -30,11 +30,16 @@ lst = list()
 
 # index keyword: convert field to ordered index 0,1,2,3 ... 
 for i in docs:
-    lst.append(pd.Series(i, index=["Age","Name", "Gender", "Weight", "Score"]))
+    s = pd.Series(i, index=["Age","Name", "Gender", "Weight", "Score"])
+    lst.append(s)
+    print "Series from json:\n{}".format(s)
+
+
+
 
 # make M (Number of docs) x N (NUmber of keys ) matrix 
 df = pd.DataFrame(lst)
-print "df={}\n=========".format(df)
+print "DataFrame from Series:\n{}\n=========".format(df)
 #print "df 0={}\n========".format(df.loc[0])
 #print "df 0 cells={},{},{},{}\n=========".format(df.loc[0][0], df.loc[0][1], df.loc[0][2], df.loc[0][3])
 
@@ -48,9 +53,11 @@ idx
 
 '''
 
+print "Age mean:{}, Weight mean:{}, Age std:{}, Age median:{}, Score median:{}".format(
+        df['Age'].mean(), df['Weight'].mean(), df['Age'].std(), df['Age'].median(), df['Score'].median())
 
-print df['Age'].mean()
-print df['Weight'].mean()
-print df['Age'].std()
-print df['Age'].median()
-print df['Score'].median()
+df.to_csv('out.csv',  sep=',', encoding='utf-8', index=False) # index: do not write index 0,1,2... as a new column
+
+x = pd.read_csv('./out.csv')
+print "DataFrame From csv file:\n{}\n=========".format(x)
+
