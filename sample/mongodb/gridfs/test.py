@@ -1,18 +1,22 @@
 from pymongo import MongoClient
 import gridfs
+import time
 
-db = MongoClient().gridfs_example
+
+db = MongoClient().gridfs_example # gridfs_example: database name
 fs = gridfs.GridFS(db)
-def write():
+def load_file_to_database():
 	#a = fs.put(b"hello world")
 	#print "a is ", a, type(a)
 	#print "get a ", fs.get(a).read()
-	a = fs.put(open("November.pdf"), filename="Nov" )
+	a = fs.put(open("November.pdf"), filename="Nov", ts=int(time.time()) ) # filename is a special keyword: should be reserved for mongo intermal usage
 
 def read():
 	query = {"filename":"Nov"}
-	for i in fs.find(query):
-		print i, i.filename, i._id, i.length, i.chunkSize
+	cursor = fs.find(query)
+	print "read:total count=", cursor.count()
+	for i in cursor:
+		print "Data={},filename={},_id={},length={},chunkSize={}".format(i, i.filename, i._id, i.length, i.chunkSize)
 
 def delete():
 	query = {"filename":"Nov"}
@@ -44,9 +48,8 @@ def save():
 			fd.write(obj.read()) # call gridfs.grid_file.GridOut read to read binary stream
 
 #delete()
-#drop()
-#write()
-print "read 1"
+drop()
+load_file_to_database()
 read()
 #print "read 2"
 #read()
