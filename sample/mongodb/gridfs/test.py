@@ -2,9 +2,10 @@ from pymongo import MongoClient
 import gridfs
 import time
 
-
-db = MongoClient().gridfs_example # gridfs_example: database name
-fs = gridfs.GridFS(db)
+col_name = 'fs'
+mc = MongoClient(host='127.0.0.1', port=27017)
+db = mc.gridfs_example # gridfs_example: database name
+fs = gridfs.GridFS(db, collection=col_name)
 def load_file_to_database():
 	#a = fs.put(b"hello world")
 	#print "a is ", a, type(a)
@@ -29,8 +30,8 @@ def delete():
 		fs.delete(i)
 
 def drop():
-	db.drop_collection('fs.files')
-	db.drop_collection('fs.chunks')
+	db.drop_collection('{}.files'.format(col_name) )
+	db.drop_collection('{}.chunks'.format(col_name) )
 
 
 def save():
@@ -47,10 +48,8 @@ def save():
 		with open('gridout.dat', 'wb') as fd:
 			fd.write(obj.read()) # call gridfs.grid_file.GridOut read to read binary stream
 
-#delete()
-drop()
+delete()
+#drop()
 load_file_to_database()
 read()
-#print "read 2"
-#read()
 save()
