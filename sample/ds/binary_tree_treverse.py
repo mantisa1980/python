@@ -19,14 +19,6 @@ class Node(object):
     def set_right(self, node):
         self.right = node
 
-def pre_order(node):
-    if node == None:
-        return
-    print "preoeder"
-    print node.get_value()
-    pre_order(node.get_left())
-    pre_order(node.get_right())
-
 class Tree(object):
     def __init__(self, root):
         self.root = root
