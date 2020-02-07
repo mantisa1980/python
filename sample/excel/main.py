@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import openpyxl
+from openpyxl.styles import Alignment
 
 '''
 aggregate report:
@@ -43,8 +44,8 @@ def init():
 def get_transaction_desc(trans_state):
     pass
 
-def get_cell(row, column):
-    return g_worksheet.cell(row=row,column=column).value
+def get_cell(row, column, sheet):
+    return sheet.cell(row=row,column=column).value
 
 def get_row(row):
     return g_rows[row] # type = tuple of Cell object
@@ -52,20 +53,19 @@ def get_row(row):
 def get_column(column):
     return g_columns[column]
 
-def parse_export():
-    #header_row = get_row(0)
-    #print type(g_rows)
-    #print header_row
-    #print type(header_row)
-    #print header_row[0]
-    #print header_row[1]
+def set_cell(row, column, sheet, value):
+    sheet.cell(row=row,column=column).value = value
 
-    #for r in g_rows:
+def parse_export():
     for idx in range(len(g_rows)):
         if idx == 0: # header
             continue
         r = g_rows[idx]
-        class_name = r[0].value
+        class_name_tokens = r[0].value.split('-')
+        class_name = class_name_tokens[0]
+        #if len(class_name_tokens) > 1:
+        #    print "class parent name-", class_name, "sub name:", class_name_tokens[1]
+
         student_name = r[1].value
         activity_date = r[2].value
         transaction_state = r[3].value
@@ -75,8 +75,11 @@ def parse_export():
         else:
             transaction_state = g_transaction_state[r[3].value]
         price = r[4].value
+        if price == None:
+            print u"警告!!!!!!!!!!!!!!:學生:{} 課程:{} 無金額資訊!!".format(student_name, r[0].value)
+            price = 0
         actual_pay_amount = r[5].value
-        note = r[6].value
+        note = r[6].value if r[6].value != None else ""
         change_class_note = r[7].value
         if student_name not in g_student_data:
             g_student_data[student_name] = {
@@ -90,30 +93,87 @@ def parse_export():
 
         data = {'date':activity_date,
                 'price':price, 
-                'actual_pay_amount': actual_pay_amount,
+                'pay_amount': actual_pay_amount,
                 'transaction_state':transaction_state,
                 'note':note,
-                'change_class_note': change_class_note
+                'change_class_note': change_class_note,
+                'whole_class_name':r[0].value,
         }
         s_info['classes'][class_name].append(data)
 
 def aggregate_export():
+    merge_info = []
     workbook = openpyxl.Workbook()
     sheet=workbook.active
-    sheet['A1']=u'請自行輸入主題'
-    sheet['A2']=u'編號'; sheet['B2']=u'姓名'; sheet['C2']=u'課程名稱'; sheet['D2']=u'課程日期'; sheet['E2']=u'堂數'; sheet['F2']=u'金額'; sheet['G2']=u'收費金額合計'; sheet['H2']=u'退費金額';
-    sheet['I2']=u'實收合計';sheet['J2']=u'備註(退費/退費說明)'; sheet['J2']=u'收據編號';
+    sheet['A1']=u'請自行輸入主題' # column 1
+    sheet['A2']=u'編號' # column 1
+    sheet['B2']=u'姓名' # column 2
+    sheet['C2']=u'課程名稱' # column 3
+    sheet['D2']=u'課程日期' # column 4
+    sheet['E2']=u'堂數' # column 5
+    sheet['F2']=u'金額' # column 6
+    sheet['G2']=u'收費金額合計' # column 7
+    sheet['H2']=u'退費金額' # column 8
+    sheet['I2']=u'實收合計' # column 9
+    sheet['J2']=u'備註(退費/退費說明)' # column 10
+    sheet['K2']=u'收據編號' # column 11
 
-
-
-    counter = 1
+    student_no = 1
+    current_row = 3
     for student_name, data in g_student_data.items():
         print u"Student={}".format(student_name)
+        
+        sheet.cell(row=current_row, column=1).value = student_no
+        sheet.cell(row=current_row, column=2).value = student_name
+        
+        class_count = len(data['classes'].values())
+        idx = 0
+        # class_data is an array of class data dictionary
         for class_name, class_data in data['classes'].items():
+            print "class name=", class_name
+            sheet.cell(row=current_row+idx, column=1).value = student_no ; sheet.cell(row=current_row+idx, column=1).alignment = Alignment(vertical='center')
+            sheet.cell(row=current_row+idx, column=2).value = student_name ; sheet.cell(row=current_row+idx, column=2).alignment = Alignment(vertical='center')
+            sheet.cell(row=current_row+idx, column=3).value = class_name
+            class_dates = []
+            notes = []
+            total_price = 0 # 兌換券金額算在內
+            total_pay_amount = 0
+            total_refund = 0
+            actual_pay_amount = 0
             for i in class_data:
-                print u"Class={}, Date={}, Amount={},State={}".format(class_name, i['date'], i['pay_amount'], g_transaction_desc[i['transaction_state']])
+                class_dates.append(i['date'])
+                total_price+=int(i['price'])
+                total_pay_amount+=i['pay_amount']
+                if i['note'] != "":
+                    notes.append(u"[{}:{}:{}]".format(i['date'], i['whole_class_name'], i['note']))
+            class_dates.sort()
+            class_date_str = u"、".join(i for i in class_dates)
+            notes_str = u'、\n'.join(i for i in notes)
+
+            sheet.cell(row=current_row+idx, column=4).value = class_date_str
+            sheet.cell(row=current_row+idx, column=5).value = len(class_dates)
+            sheet.cell(row=current_row+idx, column=6).value = total_price
+            sheet.cell(row=current_row+idx, column=7).value = total_pay_amount
+            sheet.cell(row=current_row+idx, column=8).value = total_refund
+            sheet.cell(row=current_row+idx, column=9).value = actual_pay_amount ; sheet.cell(row=current_row+idx, column=9).alignment = Alignment(vertical='center')
+            sheet.cell(row=current_row+idx, column=10).value = notes_str
+            idx +=1
+
+        if class_count > 1:
+            #print "class count > 1,", student_name, class_count
+            merge_info.append((current_row, current_row+class_count-1, 1, 1)) # start_row, end_row, start_column, end_column
+            merge_info.append((current_row, current_row+class_count-1, 2, 2)) 
+            merge_info.append((current_row, current_row+class_count-1, 9, 9))
+            merge_info.append((current_row, current_row+class_count-1, 11, 11))
+
+        current_row += class_count
+        student_no+=1
     
-    sheet['A1']='hi,wwu'
+    #for i in merge_info[:2]:
+    for i in merge_info:
+        #sheet.merge_cells(start_row=current_row, end_row=current_row + class_count, start_column=1, end_column=1) # column: A to A 
+        sheet.merge_cells(start_row=i[0], end_row=i[1], start_column=i[2], end_column=i[3])
+
     workbook.save('new.xlsx')
 
 
@@ -154,6 +214,6 @@ def merge_cell_test():
 if __name__ == "__main__":
     init()
     parse_export()
-    print_student_data()
-    #aggregate_export()
-    merge_cell_test()
+    #print_student_data()
+    aggregate_export()
+    #merge_cell_test()
