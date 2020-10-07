@@ -25,16 +25,25 @@ class RankTestCase(unittest.TestCase):
         self.logger.setLevel(logging.DEBUG)
 
     
-    def test_scheduler(self):
+    def test_rank_assigner(self):
+        pass
+
+    def test_score_bank(self):
+        pass
+
+    def _test_scheduler(self):
         rss = RankCampaignScheduler(self.logger, self.db)
         for i in range(5):
             rss.update()
-            rss.test_resolve_all_campaign()
+            #rss.test_resolve_all_campaign()
             gevent.sleep(3)
+    
+    def _test_infinite_scheduler(self):
+        rss = RankCampaignScheduler(self.logger, self.db)
+        while True:
+            rss.update()
+            gevent.sleep(1)
 
-    def test_rank(self):
-        #rs = RankService(self.logger, self.db)
-        pass
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
