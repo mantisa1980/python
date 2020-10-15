@@ -1,17 +1,20 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 import time
 import datetime
 from datetime import timedelta
 import traceback
 import pymongo
 import sys
-
+import gevent
+from apscheduler.schedulers.gevent import GeventScheduler
 '''
 # when calculating results, players are blocked from playing to avoid ranking race condition and ambiguity
 
 #### score mongodb schema
 
 # always only one document
-RankCampaign
+Campaign
 {
     'campaign_id'
     'begin_datetime'
@@ -23,16 +26,43 @@ index:
 campaign_id (unique)
 is_active
 
+Level
+{
+    ark_id
+    level
+    group:
+}
+
+Score
+{
+    level:0,
+    group: 0,
+    player_data:{
+        'uid':{
+            'score':0,
+            'last_timestamp':
+        }
+    }
+}
+
+# only for level 1 new users
+GroupDispatchInfo {
+    level:
+    counter:
+}
+
+
 #TODO: drop CampaignScore and recreate index once calculate finish.
 #TODO: after adding score , if no group, dispatch one
-RankScore:
+
+Score:
 {
     campaign_id
     ark_id
     last_update_ts
     score
-    level
-    group
+    level (main group)
+    group (sub group)
 }
 index: score / last_update_ts
 
@@ -47,24 +77,25 @@ RankResultLog
 }
 
 #TODO: if add score to campaign, return data does not have rank, append rank info from Rank onto it
+
+### Put in user info (assign award時可以一起加減level)
 RankInfo
 {
     ark_id
     level
-    group
+    #group
 }
 index: ark_id
 
 '''
 
 
-class RankCampaign(object):
+class Campaign(object):
     STATE_READY = 0
     STATE_BEGIN = 1
     STATE_CLOSING = 2 # player cannot join ; wait remaining players to finish
     #STATE_RESULT = 3 # wait calculate result
     STATE_END = 3
-    WAIT_DRAINING_MINUTES = 30
 
     def __init__(self, campaign_id, begin_datetime, closing_datetime, end_datetime):
         self.campaign_id = campaign_id
@@ -79,19 +110,19 @@ class RankCampaign(object):
             dt = datetime.datetime.now()
         
         if dt < self.begin_datetime:
-            return RankCampaign.STATE_READY
+            return Campaign.STATE_READY
         elif dt < self.closing_datetime:
-            return RankCampaign.STATE_BEGIN
+            return Campaign.STATE_BEGIN
         elif dt < self.end_datetime:
-            return RankCampaign.STATE_CLOSING
+            return Campaign.STATE_CLOSING
         else:
-            return RankCampaign.STATE_END
+            return Campaign.STATE_END
 
     def get_campaign_id(self):
         return self.campaign_id
 
     def is_active(self, dt=None):
-        return self.get_state(dt) == RankCampaign.STATE_BEGIN
+        return self.get_state(dt) == Campaign.STATE_BEGIN
 
     def __str__(self):
         return 'campaign_id:{},begin:{},close:{},end:{}'.format(
@@ -105,18 +136,21 @@ class RankCampaign(object):
             'end_datetime':self.end_datetime,
         })
 
-# campaign state: 
-class RankCampaignScheduler(object):
+# run in cron server
+class CampaignScheduler(object):
     EVENT_CREATE_CAMPAIGN = 0
     EVENT_RESOLVE_CAMPAIGN = 1
 
     def __init__(self, logger, db):
         self.logger = logger
-        self.col_campaign = db['RankCampaign']
+        self.col_campaign = db['Campaign']
+        self.col_cfg = db['CampaignConfig']
         #!!TODO: config reload
         self.cfg = {
-            'active_interval':86400 - 3600,
-            'closing_interval':1800, # disable join game, wait remaing players to finish
+            'total_interval': 86400,
+            'close_interval': 1800,  # active ~ closing
+            'end_interval': 900, # end (resolve) ~ next campaign
+            'auto_create': True, # auto create next campaign when current one resolved
         }
         self.col_campaign.create_index([('campaign_id', pymongo.DESCENDING)], unique=True)
         self.col_campaign.create_index([('resolved', pymongo.DESCENDING), ('end_datetime', pymongo.DESCENDING)])
@@ -125,23 +159,39 @@ class RankCampaignScheduler(object):
     def register_campaign_event(self, handler):
         self.campaign_event_listeners.append(handler)
 
-    def _create_campaign(self):
+    def update(self):
+        self.__reload_config()
+        self.__process_campaigns()
+
+    def test_resolve_all_campaign(self):
+        print "--------Test Resolve All Campaign--------"
+        cursor = self.col_campaign.find({'resolved':0})
+        docs = [i for i in cursor]
+        for i in docs:
+            self.__resolve_campaign(i['campaign_id'])
+
+    def __create_campaign(self):
         # get last end campaign's data
         cursor = self.col_campaign.find({'resolved':1}).limit(1)
         temp_data = [i for i in cursor]
         if len(temp_data) > 0:
-            b_dt = self.get_datetime_ceiling(temp_data[0]['end_datetime'], 'day')
-            now_day = self.get_datetime_ceiling(datetime.datetime.now(), 'day')
+            b_dt = self.__get_datetime_ceiling(temp_data[0]['end_datetime'], 'day')
+            now_day = self.__get_datetime_ceiling(datetime.datetime.now(), 'day')
             # protection: in case now time much greater than last end_datetime, new campaign opens and closed immediately 
             # (when you does not launch scheduler for a long time ...)
             if now_day > b_dt:
                 b_dt = now_day
         else:
-            b_dt = self.get_datetime_floor(datetime.datetime.now(), 'day')
+            b_dt = self.__get_datetime_floor(datetime.datetime.now(), 'day')
 
-        c_dt = b_dt + timedelta(seconds=self.cfg['active_interval'])
-        e_dt = c_dt + timedelta(seconds=self.cfg['closing_interval'])
-        cid = self.get_datetime_representation(b_dt)
+        if self.cfg['close_interval'] < self.cfg['end_interval']:
+            self.logger.error('[CampaignScheduler] error! closing time less than resolve time!{},{}'.format(
+                self.cfg['close_interval'], self.cfg['end_interval']))
+            return
+
+        c_dt = b_dt + timedelta(seconds=self.cfg['total_interval']) - timedelta(seconds=self.cfg['close_interval'])
+        e_dt = b_dt + timedelta(seconds=self.cfg['total_interval']) - timedelta(seconds=self.cfg['end_interval'])
+        cid = self.__get_datetime_representation(b_dt)
         campaign_data = {
             'campaign_id':cid,
             'begin_datetime':b_dt,
@@ -150,23 +200,20 @@ class RankCampaignScheduler(object):
             'resolved':0,
         }
         self.col_campaign.insert(campaign_data)
-        campaign_object = RankCampaign(cid, b_dt, c_dt, e_dt)
-        self.notify_event(RankCampaignScheduler.EVENT_CREATE_CAMPAIGN, campaign_object)
-        self.logger.info('[RankCampaignScheduler] create new campaign:{}'.format(campaign_data))
+        campaign_object = Campaign(cid, b_dt, c_dt, e_dt)
+        self.__notify_event(CampaignScheduler.EVENT_CREATE_CAMPAIGN, campaign_object)
+        self.logger.info('[CampaignScheduler] create new campaign:{}'.format(campaign_data))
         return True
 
-    def notify_event(self, event_type, data):
+    def __notify_event(self, event_type, data):
         for handler in self.campaign_event_listeners:
             handler(event_type, data)
 
-    def update(self):
-        self._process_campaigns()
-
-    def get_datetime_representation(self, dt):
+    def __get_datetime_representation(self, dt):
         r = '%04d%02d%02d%02d%02d%02d' %(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second)
         return r
     
-    def get_datetime_ceiling(self, base_t, mask):
+    def __get_datetime_ceiling(self, base_t, mask):
         if mask == 'day':
             new_dt = base_t + timedelta(days=1)
         elif mask == 'hour':
@@ -174,11 +221,11 @@ class RankCampaignScheduler(object):
         elif mask == 'minute':
             new_dt = base_t + timedelta(minutes=1)
         else:
-            raise Exception('[RankCampaignScheduler] unsupported mask!{}'.format(mask))
+            raise Exception('[CampaignScheduler] unsupported mask!{}'.format(mask))
         
-        return self.get_datetime_floor(new_dt, mask)
+        return self.__get_datetime_floor(new_dt, mask)
 
-    def get_datetime_floor(self, base_t, mask):
+    def __get_datetime_floor(self, base_t, mask):
         if mask == 'day':
             new_dt = datetime.datetime(year=base_t.year,month=base_t.month,day=base_t.day,hour=0,minute=0,second=0)
         elif mask == 'hour':
@@ -186,162 +233,254 @@ class RankCampaignScheduler(object):
         elif mask == 'minute':
             new_dt = datetime.datetime(year=base_t.year,month=base_t.month,day=base_t.day,hour=base_t.hour,minute=base_t.minute,second=0)
         else:
-            raise Exception('[RankCampaignScheduler] unsupported mask!{}'.format(mask))
-        
+            raise Exception('[CampaignScheduler] unsupported mask!{}'.format(mask))        
         return new_dt
 
-    def _resolve_campaign(self, campaign_id):
+    def __reload_config(self):
+        try:
+            doc = self.col_cfg.find_one({}, {'_id':False})
+            if doc != None:
+                self.cfg = doc
+        except:
+            self.logger.error('[CampaignScheduler] reload_config err!{}'.format(traceback.format_exc()))
+
+    def __resolve_campaign(self, campaign_id):
         query = {'campaign_id': campaign_id, 'resolved':0 }
         op = {'$set':{'resolved':1}}
         r = self.col_campaign.find_and_modify(query, op, upsert=False, new=True)
         if r != None:
-            self.logger.info('[RankCampaignScheduler] campaign resolved:id={}'.format(campaign_id))
-            campaign_object = RankCampaign(r['campaign_id'], r['begin_datetime'], r['closing_datetime'], r['end_datetime'])
-            self.notify_event(RankCampaignScheduler.EVENT_RESOLVE_CAMPAIGN, campaign_object)
+            self.logger.info('[CampaignScheduler] campaign resolved:id={}'.format(campaign_id))
+            campaign_object = Campaign(r['campaign_id'], r['begin_datetime'], r['closing_datetime'], r['end_datetime'])
+            self.__notify_event(CampaignScheduler.EVENT_RESOLVE_CAMPAIGN, campaign_object)
         else:
-            self.logger.error('[RankCampaignScheduler] resolve failed!{}'.format(campaign_id))
+            self.logger.error('[CampaignScheduler] resolve failed!{}'.format(campaign_id))
 
-    def _process_campaigns(self):
+    def __process_campaigns(self):
         try:
             temp_data = [i for i in self.col_campaign.find({'resolved':0})]
             current_campaigns = sorted(temp_data, key=lambda doc:doc['begin_datetime'], reverse=False)
 
-            if len(current_campaigns) == 0:
-                self._create_campaign()
+            if len(current_campaigns) == 0 and self.cfg['auto_create'] is True:
+                self.__create_campaign()
                 return
 
             for doc in current_campaigns:
-                rc = RankCampaign(doc['campaign_id'], doc['begin_datetime'], doc['closing_datetime'], doc['end_datetime'])
-                state = rc.get_state()
-                campaign_id = rc.get_campaign_id()
-                if state == RankCampaign.STATE_END:
-                    self.logger.info('[RankCampaignScheduler] campaign ends: resolving document:{}'.format(campaign_id))
-                    self._resolve_campaign(campaign_id)
+                campaign = Campaign(doc['campaign_id'], doc['begin_datetime'], doc['closing_datetime'], doc['end_datetime'])
+                state = campaign.get_state()
+                campaign_id = campaign.get_campaign_id()
+                if state == Campaign.STATE_END:
+                    self.logger.info('[CampaignScheduler] campaign ends: resolving document:{}'.format(campaign_id))
+                    self.__resolve_campaign(campaign_id)
         except:
-            self.logger.error('[RankCampaignScheduler] update error!{}'.format(traceback.format_exc()))
+            self.logger.error('[CampaignScheduler] update error!{}'.format(traceback.format_exc()))
 
-    def test_resolve_all_campaign(self):
-        cursor = self.col_campaign.find({'resolved':0})
-        docs = [i for i in cursor]
-        for i in docs:
-            self._resolve_campaign(i['campaign_id'])
 
 # create in cron server
-class RankCampaignReader(object):
+class CampaignReader(object):
     def __init__(self, logger, db):
         self.logger = logger
-        #self.col = db['RankCampaign']
-        self.active_campaign = None
-        self.reload()
+        self.col_campaign = db['Campaign']
+        self.current_campaign = None
+        self.update()
 
     def get_active_campaign(self):
-        return self.active_campaign
+        if self.current_campaign != None and self.current_campaign.is_active():
+            return self.current_campaign
+        return None
 
-    def reload(self):
-        #!!TODO load from mongodb
-        pass
+    def update(self):
+        if self.get_active_campaign() != None:
+            return
 
-##!!TODO legacy collection cleaner
-class RankScoreBank(object):
+        try:
+            now = datetime.datetime.now()
+            cursor = self.col_campaign.find({'resolved':0}, {'_id':False}) # new campaign only appears when previous campaign is resolved
+            for i in cursor:
+                if now >= i['begin_datetime'] and now < i['end_datetime']:
+                    self.current_campaign = Campaign(i['campaign_id'], i['begin_datetime'], i['closing_datetime'], i['end_datetime'])
+                    break
+        except:
+            self.logger.error('[CampaignReader] reload err!{}'.format(traceback.format_exc()))
+            
+
+class Score(object):
     def __init__(self, logger, db):
         self.logger = logger
         self.db = db
-
-    def init_campaign_index(self, campaign_id):
-        col = self.__get_score_col(campaign_id)
-        col.create_index([('ark_id', pymongo.DESCENDING)])
-        col.create_index([('score', pymongo.DESCENDING), ('last_update_time', pymongo.DESCENDING), ('ark_id', pymongo.DESCENDING)])
+        self.col_score = db['Score']
+        self.col_score.create_index([('level', pymongo.DESCENDING), ('group', pymongo.DESCENDING)], unique=True)
     
-    def get_score(self, campaign_id, ark_id):
-        col = self.__get_score_col(campaign_id)
+    def init_group_score(self, level, group, data):
+        '''
+        data: {
+            '10000001':{'score':0, 'last_update_timestamp':0},
+            '10000002':{'score':0, 'last_update_timestamp':0},
+            '10000003':{'score':0, 'last_update_timestamp':0},
+        }
+        '''
+        if not isinstance(data, dict):
+            self.logger.error('[Score] error init_group_score format!{}'.format(type(data)))
+            return
         try:
-            r = col.find_one({'ark_id':ark_id }, read_preference=pymongo.ReadPreference.SECONDARY_PREFERRED)
-            return r
+            query = {'level':level, 'group':group}
+            op = {'$set':{'player_data':data } }
+            self.col_score.find_and_modify(query, op, upsert=True)
         except:
-            self.logger.error('[{}]err!campaign={},ark_id={},cs={}'.format(
-                self.__class__.__name__, campaign_id, ark_id, traceback.format_exc()))
+            self.logger.error('[{}]err!level={},group={},data={}, cs={}'.format(
+                self.__class__.__name__, level, group, data, traceback.format_exc()))
             return None
+    
+    def get_all_scores(self, rd_pfr=pymongo.ReadPreference.PRIMARY):
+        cursor = self.col_score.find({}, {'_id':False, 'level':True, 'group':True})
+        group_info = [doc for doc in cursor]
+        rtn = {}
+        for doc in group_info:
+            level = doc['level']
+            group = doc['group']
+            data = self.get_group_score(level, group, rd_pfr=rd_pfr)
+            if data == None:
+                self.logger.error('[Score] get all scores failed! terminate here')
+                return {}
+            if level not in rtn:
+                rtn[level] = list()
+            rtn[level].append(data)
+            #rtn.append(data)
+        return rtn
 
-    def get_campaign_score(self, campaign_id, direction, limit=None):
-        col = self.__get_score_col(campaign_id)
-        total_count = col.count()
-        upgrade_set = set()
-        downgrade_set = set()
-        lst = list()
-
-        if direction == 'top':
-            sorting = pymongo.DESCENDING
-        elif direction == 'buttom':
-            sorting = pymongo.AESCENDING
-
-        batch_size = 5000
-        current_count = 0
-
-        if limit == None:
-            while True:
-                iteration_counter = 0
-                cursor = col.find({'score':{'$gte:0'}}, {'_id':False}).sort([('score', sorting)]).skip(current_count).limit(batch_size)
-                for i in cursor:
-                    lst.append(i)
-                    iteration_counter +=1
-                if iteration_counter == 0:
-                    break
-                else:
-                    current_count += batch_size
-        else:
-            while current_counter < limit:
-                remain = limit - current_counter
-                if remain < batch_size:
-                    batch_size = remain
-
-                cursor = col.find({'score':{'$gte':0}}, {'_id':False}).sort([('score', sorting)]).skip(current_count).limit(batch_size)
-                for i in cursor:
-                    lst.append(i)
-                current_count += batch_size
-
-    def __get_score_col(self, campaign_id):
-        return self.db['RankScore_{}'.format(campaign_id)]
+    def get_group_score(self, level, group, rd_pfr=pymongo.ReadPreference.SECONDARY_PREFERRED):
+        try:
+            r = self.col_score.find_one({'level':level, 'group':group}, {'_id':False}, read_preference=rd_pfr)
+            if r != None:
+                return r['player_data']
+        except:
+            self.logger.error('[{}]err!level={},group={},cs={}'.format(
+                self.__class__.__name__, level, group, traceback.format_exc()))
+            return None
 
     #def add_score(self, campaign_id, ark_id, level, group, score):
-    def add_score(self, campaign_id, ark_id, score):
-        col = self.__get_score_col(campaign_id)
-        query = {'ark_id':ark_id }
-        op = {'$inc':{'score': score}}
-        r = col.find_and_modify(query, op, upsert=True, new=True)
-        return r
-
-class RankAssigner(object):
-    def __init__(self, logger, db, namespace):
-        self.logger = logger
-        self.namespace = namespace
-        rank_col_name = '{}Rank'.format(namespace)
-        group_col_name = '{}Group'.format(namespace)
-
-        self.col_rank = db[rank_col_name]
-        self.col_group = db[group_col_name]
-        self.col_rank.create_index([('ark_id', pymongo.DESCENDING)], unique=True)
-
-    def get_rank_data(self, ark_id):
-        try:
-            doc = self.col_rank.find_one({'ark_id':ark_id}, {'_id':False })
-            if doc != None:
-                return doc
-            return None
-        except:
-            self.logger.error('[RankAssigner({})] err! ark_id={},cs={}'.format(self.namespace, ark_id, traceback.format_exc()))
-            return None
+    def add_player_score(self, ark_id, level, group, score):
+        if score < 0 or not isinstance(score, int):
+            self.logger.error('[{}]err!ark_id={},level={},group={},score={}'.format(
+                self.__class__.__name__, ark_id, level, group, score))
+            return False
         
-    def init_rank_data(self, ark_id):
         try:
-            doc = {'group':1, 'level':1, 'ark_id': str(ark_id) }
-            self.col_rank.insert(doc, manipulate=False)
+            query = {'level':level, 'group':group}
+            key1 = 'player_data.{}.score'.format(ark_id)
+            key2 = 'player_data.{}.last_update_timestamp'.format(ark_id)
+            ts = int(time.time())
+            op = {'$inc':{key1: score }, '$set':{key2:ts}}
+            r = self.col_score.find_and_modify(query, op, upsert=True, new=True)
+            return True
         except:
-            self.logger.error('[RankAssigner({})] err! ark_id={},cs={}'.format(self.namespace, ark_id, traceback.format_exc()))
-    
-    def dispatch_newbie_group(self):
-        pass
+            self.logger.error('[{}]err!ark_id={},level={},group={},score={},cs={}'.format(
+                self.__class__.__name__, ark_id, level, group, score,traceback.format_exc()))
+            return False
 
-    def rank(self, level, sorted_score_list):
+#!!TODO: put in user info
+class Level(object):
+    BEGINNER1 = 1
+    BEGINNER2 = 2
+    BEGINNER3 = 3
+    ROOKIE1 = 4
+    ROOKIE2 = 5
+    ROOKIE3 = 6
+    PROFESSIONAL1 = 7
+    PROFESSIONAL2 = 8
+    PROFESSIONAL3 = 9
+    EXPERT1 = 10
+    EXPERT2 = 11
+    EXPERT3 = 12
+    MASTER1 = 13
+    MASTER2 = 14
+    MASTER3 = 15
+    MAX = 15
+
+    def __init__(self, logger, db):
+        self.logger = logger
+        self.col_level = db['Level']
+        self.col_level.create_index([('ark_id', pymongo.DESCENDING)], unique=True)
+
+    def get_level(self, ark_id):
+        try:
+            doc = self.col_level.find_one({'ark_id':ark_id}, {'_id':False })
+            if doc != None:
+                return True, doc
+            return True, None
+        except:
+            self.logger.error('[Level] get level err! ark_id={},cs={}'.format(ark_id, traceback.format_exc()))
+            return False, None
+
+    def level_up(self, ark_id):
+        try:
+            query = {'ark_id': ark_id, 'level':{'$lt': Level.MAX}}
+            op = {'$inc':{'level':1}}
+            r = self.col_level.find_and_modify(query, op, new=True, upsert=True)
+            return r
+        except:
+            self.logger.error('[Level] err! ark_id={},cs={}'.format(ark_id, traceback.format_exc()))
+            return None
+
+    def init_level(self, ark_id, group):
+        try:
+            doc = {'level':Level.BEGINNER1, 'ark_id': ark_id, 'group': group}
+            self.col_level.insert(doc, manipulate=False)
+            return doc
+        except:
+            self.logger.error('[Level] err! ark_id={},cs={}'.format(ark_id, traceback.format_exc()))
+            return None
+
+#!! TODO : rule for master degree
+class GroupDispatcher(object):
+    def __init__(self, logger, db):
+        self.logger = logger
+        self.GROUP_SIZE = 100
+        self.col_dispatch = db['GroupDispatchInfo']
+        self.col_dispatch.create_index([('level', pymongo.DESCENDING)], unique=True)
+    
+    def resize_group(self, level, size):
+        query = {'level':level}
+        op = {'$set':{'counter':size}}
+        try:
+            self.col_dispatch.find_and_modify(query, op)
+        except:
+            self.logger.error('[GroupDispatcher] err! level={},size={},cs={}'.format(level, size, traceback.format_exc()))
+
+    def diff_group(self, level, counter):
+        query = {'level':level}
+        op = {'$inc':{'counter': counter}}
+        try:
+            self.col_dispatch.find_and_modify(query, op, new=False, upsert=True)
+            return True
+        except:
+            self.logger.error('[GroupDispatcher] err! level={},cnt={},cs={}'.format(level, counter, traceback.format_exc()))
+        return False
+
+    def dispatch_group(self, level):
+        query = {'level':level}
+        op = {'$inc':{'counter':1}}
+        try:
+            r = self.col_dispatch.find_and_modify(query, op, new=False, upsert=True)
+            if r == None: # first time
+                group = 0
+            else:
+                group = int(r['counter']/self.GROUP_SIZE)
+            return group
+        except:
+            self.logger.error('[GroupDispatcher] err! level={},cs={}'.format(level, traceback.format_exc()))
+        return None
+
+class RankReArranger(object):
+    @staticmethod
+    def resolve_ranking(level, group, group_data_list):
+        '''
+        group_data_list:{
+            '10000001':{'score':0, 'last_timestamp': },
+            '10000002':{'score':0, 'last_timestamp': },
+        }
+        '''
+        # select top N / Buttom N percent
+        '''
         #!!TODO
         # if level == master ...
         group_max = 100
@@ -372,50 +511,87 @@ class RankAssigner(object):
             'upgrade': sorted_score_list[:up_count],
             'downgrade':sorted_score_list[:downgrade],
         }
-
-class RankReArranger(object):
-    @staticmethod
-    def resolve_ranking(level, group, data_list):
-        # select top N / Buttom N percent
-
+        '''
         return {
-            'upgrade':[]
-            'downgrade':[]
+            'upgrade':[],
+            'downgrade':[],
         }
 
-class RankManager(object):
-    def __init__(self, logger, db):
+
+# this runs in scheduler server
+class RankCron(object):
+    def __init__(self, logger , db):
+        self.UPDATE_TIME = 5
         self.logger = logger
         self.db = db
-        self.assigner = RankAssigner(self.logger, self.db, 'WinRank')
-        self.score_bank = RankScoreBank(self.logger, self.db)
-        self.campaign_finder = RankCampaignReader(self.logger, self.db)
-        self.scheduler = RankCampaignScheduler(self.logger, self.db)
-        self.init_campaign_event_handlers()
-    
-    def init_campaign_event_handlers(self):
+        self.level = Level(logger, db)
+        self.score = Score(logger, db)
+        self.scheduler = CampaignScheduler(logger, db)
         self.scheduler.register_campaign_event(self.on_campaign_event)
+        self.ap_scheduler = GeventScheduler()
 
-    def on_campaign_event(self, event_type, data):
-        if event_type == RankCampaignScheduler.EVENT_CREATE_CAMPAIGN:
-            campaign_id = data.get_campaign_id()
-            self.score_bank.init_campaign_index(campaign_id)
+    def init_modules(self):
+        self.scheduler.update() # load first config
+        self.ap_scheduler.add_job(self.scheduler.update, trigger='interval', seconds=self.UPDATE_TIME)
+        self.ap_scheduler.start()
+
+    def on_campaign_event(self, event_type, campaign_object):
+        if event_type == CampaignScheduler.EVENT_CREATE_CAMPAIGN:
+            pass
+        elif event_type == CampaignScheduler.EVENT_RESOLVE_CAMPAIGN:
+            self.resolve_campaign(campaign_object.get_campaign_id())
+
+    def resolve_campaign(self, campaign_id):
+        all_scores = self.score.get_all_scores()
+        print "AllScore:", all_scores
+
+class RankGame(object):
+    def __init__(self, logger, db):
+        self.UPDATE_TIME = 5
+        self.logger = logger
+        self.db = db
+        self.level = Level(logger, db)
+        self.score = Score(logger, db)
+        self.dispatcher = GroupDispatcher(logger, db)
+        self.campaign_reader = CampaignReader(logger, db)
+        self.ap_scheduler = GeventScheduler()
+        self.init_modules()
+        
+    def init_modules(self):
+        self.campaign_reader.update() # load first config
+        self.ap_scheduler.add_job(self.campaign_reader.update, trigger='interval', seconds=self.UPDATE_TIME)
+        self.ap_scheduler.start()
     
-    def add_score(self, ark_id, score):
-        rank_info = self.rank_assigner.get_rank(ark_id)
-        if rank_info == None:
-            rank_info = self.rank_assigner.init_rank(ark_id)
-            if rank_info == None:
-                self.logger.error('[RankService] fail to add score!ark_id:{},score:{}'.format(ark_id, score))    
-        #campaign_id = self.
+    def get_scheduler(self):
+        return self.scheduler
 
-        level = rank_info['level']
-        group = rank_info['group']
-        campaign = self.campaign_finder.get_active_campaign()
+    def get_campaign_reader(self):
+        return self.campaign_reader
+
+    def get_score_module(self):
+        return self.score
+
+    def get_level_module(self):
+        return self.level
+
+    def add_score(self, ark_id, score):
+        campaign = self.campaign_reader.get_active_campaign()
         if campaign is None:
-            print "Campaign is None, cannot play"
+            self.logger.debug('[RankManager] no campaign! skip adding score:id={},score={}'.format(ark_id, score))
             return
 
-        campaign_id = campaign.get_campaign_id()
-        self.score_accumolator.add_score(campaign_id, ark_id, level, group, score)
-    
+        ok, rank_info = self.level.get_level(ark_id)
+        if not ok:
+            return
+        
+        if rank_info == None:
+            group = self.dispatcher.dispatch_group(Level.BEGINNER1)
+            rank_info = self.level.init_level(ark_id, group)
+            if rank_info == None:
+                self.dispatcher.diff_group(Level.BEGINNER1, -1) # rollback
+                self.logger.error('[RankService] fail to add score!ark_id:{},score:{}'.format(ark_id, score))
+                return
+        
+        level = rank_info['level']
+        group = rank_info['group']
+        self.score.add_player_score(ark_id, level, group, score)
