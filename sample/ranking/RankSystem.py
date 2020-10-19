@@ -7,6 +7,7 @@ import traceback
 import pymongo
 import sys
 import gevent
+import math
 from apscheduler.schedulers.gevent import GeventScheduler
 '''
 # when calculating results, players are blocked from playing to avoid ranking race condition and ambiguity
@@ -52,17 +53,20 @@ GroupDispatchInfo {
 }
 
 
-#TODO: drop CampaignScore and recreate index once calculate finish.
-#TODO: after adding score , if no group, dispatch one
+'#query = {'level':level, 'group':group}
+ #           key1 = 'player_data.{}.score'.format(ark_id)
+ #           key2 = 'player_data.{}.last_update_timestamp'.format(ark_id)
 
 Score:
 {
-    campaign_id
     ark_id
     last_update_ts
-    score
     level (main group)
     group (sub group)
+    player_data:{
+        '10000001':{'score':100, 'last_update_timestamp':1234567899 },
+        '10000002':{'score':100, 'last_update_timestamp':1234567899 },
+    }
 }
 index: score / last_update_ts
 
@@ -283,6 +287,11 @@ class CampaignReader(object):
         self.current_campaign = None
         self.update()
 
+    def get_current_campaign(self):
+        if self.current_campaign != None:
+            return self.current_campaign
+        return None
+
     def get_active_campaign(self):
         if self.current_campaign != None and self.current_campaign.is_active():
             return self.current_campaign
@@ -342,9 +351,12 @@ class Score(object):
                 self.logger.error('[Score] get all scores failed! terminate here')
                 return {}
             if level not in rtn:
-                rtn[level] = list()
-            rtn[level].append(data)
-            #rtn.append(data)
+                rtn[level] = dict()
+
+            if group not in rtn[level]:
+                rtn[level][group] = {}
+
+            rtn[level][group] = data
         return rtn
 
     def get_group_score(self, level, group, rd_pfr=pymongo.ReadPreference.SECONDARY_PREFERRED):
@@ -394,6 +406,7 @@ class Level(object):
     MASTER1 = 13
     MASTER2 = 14
     MASTER3 = 15
+    MIN = 1
     MAX = 15
 
     def __init__(self, logger, db):
@@ -416,6 +429,16 @@ class Level(object):
             query = {'ark_id': ark_id, 'level':{'$lt': Level.MAX}}
             op = {'$inc':{'level':1}}
             r = self.col_level.find_and_modify(query, op, new=True, upsert=True)
+            return r
+        except:
+            self.logger.error('[Level] err! ark_id={},cs={}'.format(ark_id, traceback.format_exc()))
+            return None
+
+    def level_down(self, ark_id):
+        try:
+            query = {'ark_id': ark_id, 'level':{'$gt': Level.MIN}}
+            op = {'$inc':{'level':-1}}
+            r = self.col_level.find_and_modify(query, op, new=True, upsert=False)
             return r
         except:
             self.logger.error('[Level] err! ark_id={},cs={}'.format(ark_id, traceback.format_exc()))
@@ -470,54 +493,6 @@ class GroupDispatcher(object):
             self.logger.error('[GroupDispatcher] err! level={},cs={}'.format(level, traceback.format_exc()))
         return None
 
-class RankReArranger(object):
-    @staticmethod
-    def resolve_ranking(level, group, group_data_list):
-        '''
-        group_data_list:{
-            '10000001':{'score':0, 'last_timestamp': },
-            '10000002':{'score':0, 'last_timestamp': },
-        }
-        '''
-        # select top N / Buttom N percent
-        '''
-        #!!TODO
-        # if level == master ...
-        group_max = 100
-        upgrade_max = 10
-        downgrde_max = 10
-        middle = group_max - upgrade_max - downgrde_max
-
-        up_count = 0
-        down_count = 0
-        player_count = len(sorted_score_list)
-        remainings = player_count
-
-        if player_count <= upgrade_max:
-            up_count = player_count
-            down_count = 0
-            remainings = 0
-        else:
-            up_count = upgrade_max
-            remainings = player_count - up_count
-
-            if remainings <= middle:
-                down_count = 0
-            else:
-                remainings -= middle
-                down_count = remainings
-
-        return {
-            'upgrade': sorted_score_list[:up_count],
-            'downgrade':sorted_score_list[:downgrade],
-        }
-        '''
-        return {
-            'upgrade':[],
-            'downgrade':[],
-        }
-
-
 # this runs in scheduler server
 class RankCron(object):
     def __init__(self, logger , db):
@@ -542,8 +517,86 @@ class RankCron(object):
             self.resolve_campaign(campaign_object.get_campaign_id())
 
     def resolve_campaign(self, campaign_id):
-        all_scores = self.score.get_all_scores()
-        print "AllScore:", all_scores
+        '''
+        all_data format :
+        data: {
+            '$level': {
+                $group: {
+                    $ark_id:{last_update_timestamp:1234567899, score': 100}
+                }
+            }
+        }
+        # sample:
+        1:{
+            0:{
+                u'10000002':{u'last_update_timestamp':1602756612, u'score':100 },
+                u'10000001':{u'last_update_timestamp':1602756612, u'score':100 }
+            },
+            1:{
+                u'10000003':{u'last_update_timestamp':1602756612, u'score':100 }
+            }
+        },
+        2:{
+            0:{
+                u'10000004':{u'last_update_timestamp':1602756612, u'score':100 }
+            }
+        }
+        '''
+        all_data = self.score.get_all_scores()
+        for level, group_data in all_data.items():
+            for group_id, player_data in group_data.items():
+                top_down_users = self.pick_level_change_players(level, player_data)
+                self.logger.info('[RankCron] level change list:level={},group={},data={}'.format(level, group, top_down_users))
+                for p in top_down_users['upgrade']:
+                    self.level.level_up(p[0])
+                
+                for p in top_down_users['downgrade']:
+                    self.level.level_down(p[0])
+
+    # player_data format: 
+    # {'10000002': {'last_update_timestamp': 1602826256, 'score': 100}, '10000001': {'last_update_timestamp': 1602826256, 'score': 100}}
+    def pick_level_change_players(self, level, player_data):
+        #!!TODO: level MAX checking flow
+
+        player_count = len(player_data)
+        if player_count == 0:
+            return {
+                'upgrade':[],
+                'downgrade':[],
+            }
+
+        iter_data = player_data.items()
+        # sort by score, last_update_timestamp,ark_id descending
+        iter_data.sort(key=lambda elm: (elm[1]['score'], elm[1]['last_update_timestamp'], elm[0]), reverse=True)
+
+        upgrade_ratio = 0.3
+        downgrade_ratio = 0.1
+        upgrade_max = int(math.ceil(player_count * upgrade_ratio))
+        downgrade_max = int(math.floor(player_count * downgrade_ratio))
+        middle_max = player_count - upgrade_max - downgrade_max
+
+        up_count = 0
+        middle_count = 0
+        down_count = 0
+
+        if player_count <= upgrade_max:
+            up_count = player_count
+        else:
+            up_count = upgrade_max
+            player_count-=up_count
+
+            if player_count <= middle_max:
+                middle_count = player_count
+                down_count = 0
+            else:
+                middle_count = middle_max
+                player_count -= middle_max
+                down_count = player_count
+
+        return {
+            'upgrade':iter_data[:up_count],
+            'downgrade':iter_data[up_count+middle_count:],
+        }
 
 class RankGame(object):
     def __init__(self, logger, db):
