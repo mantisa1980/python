@@ -82,5 +82,5 @@ def main():
         gevent.sleep(1)
 
 if __name__ == "__main__":
-    #main()
-    persist_demo()
+    main()
+    #persist_demo()
