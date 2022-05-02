@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 __author__ = 'duyhsieh'
-import Tkinter as tk
+import sys
+if sys.version[0] == '3':
+    import tkinter as tk
+else:
+    import Tkinter as tk
 from functools import partial
 #from BisonClient import BisonClient
 
@@ -34,7 +38,8 @@ class Model(object):
 
 class View(object):
     def __init__(self):
-        self.ark_request_buttons = dict()
+        self.ark_command_buttons = dict()
+        self.reverse_command_table = dict()
         self.click_event_listeners = list()
 
     def on_click_button(self, system, command):
@@ -44,23 +49,53 @@ class View(object):
     def register_click_event(self, listener):
         self.click_event_listeners.append(listener)
 
-    def create_request_button(self, system, command):
-        if system not in self.ark_request_buttons:
-            self.ark_request_buttons[system] = list()
-        self.ark_request_buttons[system].append(command)
+    def add_request_button(self, system, command):
+        if system not in self.ark_command_buttons:
+            self.ark_command_buttons[system] = list()
+        
+        if command in self.reverse_command_table:
+            command = command + '_' + system
+
+        self.ark_command_buttons[system].append(command)
+
+        self.reverse_command_table[command] = system
 
     def on_response(self, message):
         print("[View] setting display message", message)
 
     def render(self):
-        root = tk.Tk()
-        app = tk.Frame(root)
+        window = tk.Tk()
+        window.title('GUIClient')
+        window.geometry('800x600')
+        
+        top_frame = tk.Frame(master=window)
+        label = tk.Label(master=top_frame, text="Status...")
+        label.pack()
+        top_frame.pack(side=tk.TOP)
 
-        for system, command_lst in self.ark_request_buttons.items():
-            for cmd in command_lst:
-                btn = tk.Button(root, text=cmd, command=partial(self.on_click_button, system, cmd))
-                btn.pack(side=tk.LEFT)
-        root.mainloop()
+        command_frame = tk.Frame(master=window)
+        command_frame.pack(side=tk.LEFT)
+
+        for cmd in sorted(self.reverse_command_table.keys()):
+            system = self.reverse_command_table[cmd]
+            btn = tk.Button(master=command_frame, text=cmd, command=partial(self.on_click_button, system, cmd))
+            btn.pack(side=tk.LEFT, ipadx=1, ipady=1) # internal padding
+            #btn.pack(side=)
+
+        textbox = tk.Text(master=command_frame)
+        textbox.pack(side=tk.BOTTOM)
+
+        label_custom_system_inputbox = tk.Label(master=command_frame, text="Custom System")
+        label_custom_system_inputbox.pack(side=tk.LEFT)
+        custom_system_inputbox = tk.Entry(command_frame)
+        custom_system_inputbox.pack(side=tk.LEFT)
+
+        label_custom_command_inputbox = tk.Label(master=command_frame, text="Custom Command")
+        label_custom_command_inputbox.pack(side=tk.LEFT)
+        custom_command_inputbox = tk.Entry(command_frame)
+        custom_command_inputbox.pack(side=tk.LEFT)
+        
+        window.mainloop()
 
 def main():
     model = Model()
@@ -70,7 +105,7 @@ def main():
     total_commands = model.get_total_commands()
     for system, command_lst in total_commands.items():
         for command in command_lst:
-            view.create_request_button(system, command)
+            view.add_request_button(system, command)
     view.register_click_event(ctrl.on_click_event)
     view.render()
 
