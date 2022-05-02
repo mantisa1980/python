@@ -40,14 +40,18 @@ class View(object):
     def __init__(self):
         self.ark_command_buttons = dict()
         self.reverse_command_table = dict()
-        self.click_event_listeners = list()
+        self.command_click_event_listeners = list()
 
-    def on_click_button(self, system, command):
-        for listener in self.click_event_listeners:
+    def on_click_custom_command_button(self):
+        print("clicking custom command button",  )
+        pass
+
+    def on_click_command_button(self, system, command):
+        for listener in self.command_click_event_listeners:
             listener(system, command, {'todo':'input data'})
-    
+
     def register_click_event(self, listener):
-        self.click_event_listeners.append(listener)
+        self.command_click_event_listeners.append(listener)
 
     def add_request_button(self, system, command):
         if system not in self.ark_command_buttons:
@@ -68,32 +72,39 @@ class View(object):
         window.title('GUIClient')
         window.geometry('800x600')
         
-        top_frame = tk.Frame(master=window)
+        top_frame = tk.Frame(master=window,bg='yellow')
         label = tk.Label(master=top_frame, text="Status...")
         label.pack()
         top_frame.pack(side=tk.TOP)
 
-        command_frame = tk.Frame(master=window)
-        command_frame.pack(side=tk.LEFT)
+        command_frame = tk.Frame(master=window, bg="blue")
+        command_frame.pack(side=tk.LEFT, fill=tk.X)
+
+        custom_command_frame = tk.Frame(master=window, bg="green")
+        #custom_command_frame.pack(side=tk.LEFT)
+        custom_command_frame.pack(side=tk.BOTTOM)
 
         for cmd in sorted(self.reverse_command_table.keys()):
             system = self.reverse_command_table[cmd]
-            btn = tk.Button(master=command_frame, text=cmd, command=partial(self.on_click_button, system, cmd))
+            btn = tk.Button(master=command_frame, text=cmd, command=partial(self.on_click_command_button, system, cmd))
             btn.pack(side=tk.LEFT, ipadx=1, ipady=1) # internal padding
-            #btn.pack(side=)
 
-        textbox = tk.Text(master=command_frame)
-        textbox.pack(side=tk.BOTTOM)
+        #stextbox = tk.Text(master=command_frame)
+            #textbox.pack(side=tk.LEFT)
+        #textbox.pack(side=tk.BOTTOM)
 
-        label_custom_system_inputbox = tk.Label(master=command_frame, text="Custom System")
+        label_custom_system_inputbox = tk.Label(master=custom_command_frame, text="Custom System")
         label_custom_system_inputbox.pack(side=tk.LEFT)
-        custom_system_inputbox = tk.Entry(command_frame)
-        custom_system_inputbox.pack(side=tk.LEFT)
+        self.custom_system_inputbox = tk.Entry(custom_command_frame)
+        self.custom_system_inputbox.pack(side=tk.LEFT)
 
-        label_custom_command_inputbox = tk.Label(master=command_frame, text="Custom Command")
+        label_custom_command_inputbox = tk.Label(master=custom_command_frame, text="Custom Command")
         label_custom_command_inputbox.pack(side=tk.LEFT)
-        custom_command_inputbox = tk.Entry(command_frame)
-        custom_command_inputbox.pack(side=tk.LEFT)
+        self.custom_command_inputbox = tk.Entry(custom_command_frame)
+        self.custom_command_inputbox.pack(side=tk.LEFT)
+
+        btn = tk.Button(master=custom_command_frame, text="SendCustom", command=self.on_click_custom_command_button)
+        btn.pack(side=tk.LEFT)
         
         window.mainloop()
 
