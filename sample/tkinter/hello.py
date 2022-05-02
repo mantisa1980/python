@@ -2,6 +2,7 @@ import Tkinter as tk
 #from Tkinter import *
 #from BisonClient import BisonClient
 
+
 g_systems = {
     'login':['LOGIN'],
 	'lobbylogin':['LOBBYLOGIN'],
