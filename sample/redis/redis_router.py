@@ -46,16 +46,18 @@ def RedisRouter(object):
     def __init__(self, config_reader, redis_pool):
         self.config_reader = config_reader
         self.redis_pool = redis_pool
-        self.current_group = None
+        self.current_group = 'default'
         self.pending_group = None
         self.update()
 
     def update(self):
         config = self.config_reader.get_config()
-        self.sync_redis_group(config)
+        if config is not None:
+            self.sync_redis_group(config)
 
-    def sync_redis_pool(self, config):
+    def sync_redis_group(self, config):
         now_ts = time.time()
+
         if config['start_ts'] > time.time(): # future group exists
             if self.pending_group != config['group_id']:
                 print("pending group found!")
@@ -82,17 +84,13 @@ class RedisRouterConfigReader(object):
 
     def get_config(self):
         r = self.col_routing_config.find_one({})
-        if r is None:
-            return {
-                "group_id": "default",
-                "start_ts": 1200000000,
-                "redis_hosts":["redis001:6379", "redis002:6379", "redis003:6379"],
-            }
-        else:
+        if r is not None: 
+            #!!return r 
             return {
                 "group_id": "v2",
                 "start_ts": 1600000000,
                 "redis_hosts":["redis001:6379", "redis002:6379", "redis003:6379", "redis004:6379"],
-                }
+            }
+        return None
 
         
