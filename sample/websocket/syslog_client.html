@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Tail</title>
+    <style>
+        /* Define the layout with CSS */
+        #container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #messageContainer {
+            flex-grow: 1;
+            overflow-y: scroll;
+            padding: 10px;
+        }
+
+        #output {
+            overflow-y: scroll;
+            border: 1px solid #ccc;
+            padding: 10px;
+        }
+
+        #buttonContainer {
+            text-align: center;
+            padding: 10px;
+            background-color: #f0f0f0;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebSocket Hello World</h1>
+    <div id="container">
+        <div id="messageContainer">
+            <div id="output"></div>
+        </div>
+        <div id="buttonContainer">
+            <div>
+                Server Address: <span id="serverAddress">ws://107.20.227.17:8080</span>
+            </div>
+            <button id="disconnectButton" onclick="disconnectFromServer()" disabled>Disconnect</button>
+            <button id="clearButton" onclick="clearMessages()">Clear Messages</button>
+        </div>
+    </div>
+    
+    <script>
+        const outputDiv = document.getElementById("output");
+        const messageContainer = document.getElementById("messageContainer");
+        const disconnectButton = document.getElementById("disconnectButton");
+        const clearButton = document.getElementById("clearButton");
+        let socket;
+
+        function connectToServer() {
+            const serverAddress = serverAddressInput.value;
+            //socket = new WebSocket(serverAddress);
+            socket = new WebSocket("ws://107.20.227.17:8080");
+
+            socket.onmessage = (event) => {
+                const message = event.data;
+                const messageElement = document.createElement("p");
+                messageElement.textContent = message;
+                outputDiv.appendChild(messageElement);
+                messageContainer.scrollTop = messageContainer.scrollHeight;
+            };
+
+            socket.onclose = () => {
+                disconnectButton.disabled = true;
+            };
+        }
+
+        function disconnectFromServer() {
+            if (socket) {
+                socket.close();
+            }
+        }
+
+        function clearMessages() {
+            outputDiv.innerHTML = ""; // Clear all messages
+        }
+
+        // Enable the "Disconnect" button initially
+        disconnectButton.disabled = false;
+
+        // Automatically connect to the server when the page loads
+        connectToServer();
+    </script>
+</body>
+</html>
+
