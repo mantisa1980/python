@@ -7,13 +7,30 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from collections import Counter
 
+'''
+preprocessing:
+1. Go to the Google Cloud Console.
+2. Create a new project or use an existing one.
+3. Enable the Gmail API.
+4. Configure OAuth 2.0 credentials:
+Go to APIs & Services > Credentials.
+Click Create Credentials > OAuth Client ID. 
+(After this, you should see OAuth 2.0 Client IDs section in your API and Services Page (Credential Tab)
+Set Application Type to "Desktop app"
+Download the credentials.json file; Modify OAUTH_CREDENTIAL_PATH to your local path.
+5. in API and Services page, click OAuth consent screen, and select "Data Access"
+in Your restricted scopes, make sure you have the Gmail Scope:https://mail.google.com/
+6. install python packages: (python3 example)
+pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+'''
+
 # Define Gmail API Scopes
-#SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 SCOPES = ["https://mail.google.com/"]
+OAUTH_CREDENTIAL_PATH = "C:\\Users\\manti\\credential\\gmail_cleaner_oauth_client.apps.googleusercontent.com.json"
 
 def my_input(prompt):
-    #return input(prompt)
-    return "y"
+    return input(prompt)
+    #return "y"
 
 def authenticate_gmail():
     """Authenticate and return Gmail API service."""
@@ -30,7 +47,7 @@ def authenticate_gmail():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file("C:\\Users\\manti\\credential\\gmail_cleaner_oauth_client.apps.googleusercontent.com.json", SCOPES)
+            flow = InstalledAppFlow.from_client_secrets_file(OAUTH_CREDENTIAL_PATH, SCOPES)
             creds = flow.run_local_server(port=0)
 
         # Save the credentials for future use
